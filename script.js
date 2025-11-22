@@ -23,14 +23,13 @@ const PLAYER_RADIUS = 22;
 const PLAYER_DRAW_SIZE = 60;
 
 // ---------------------------
-// Difficulty scaling
+// Difficulty scaling + easy first 10
 // ---------------------------
 const SCORE_PER_LEVEL = 5;
 const SPEED_STEP = 0.25;
 const GAP_STEP = 6;
 const MIN_GAP_HEIGHT = 110;
 
-// EASY START (first 10 obstacles)
 const EASY_OBSTACLES = 10;
 const EASY_SPEED_MULT = 0.65;
 const EASY_GAP_BONUS = 45;
@@ -38,7 +37,6 @@ const EASY_SPAWN_BONUS = 250;
 
 function getDifficulty() {
   const easy = score < EASY_OBSTACLES;
-
   const effectiveScore = Math.max(0, score - EASY_OBSTACLES);
   const level = Math.floor(effectiveScore / SCORE_PER_LEVEL);
 
@@ -64,111 +62,69 @@ try {
 } catch {}
 
 function saveBestScore() {
-  try {
-    localStorage.setItem("flappy_best", String(bestScore));
-  } catch {}
+  try { localStorage.setItem("flappy_best", String(bestScore)); } catch {}
 }
 
 // ---------------------------
-// Backgrounds (Day/Night) + smooth fade
-// Every 10 score -> switch time
+// Backgrounds (day/night) + smooth crossfade
 // ---------------------------
-const BG_PHASE_SCORE = 10;
-const BG_FADE_MS = 1200;
-const BG_SPEED = 0.6;
-
 const bgDay = new Image();
 bgDay.src = "assets/city.jpg";
 
+// rename this file if needed
 const bgNight = new Image();
-bgNight.src = "assets/city-night.jpg"; // ensure this exists
-
-const bgPhases = [
-  { name: "day", img: bgDay, speedBonus: 0.0, tintAlpha: 0.0 },
-  { name: "night", img: bgNight, speedBonus: 0.2, tintAlpha: 0.15 },
-];
+bgNight.src = "assets/city-night.jpg";
 
 let bgX = 0;
-let bgPhaseIndex = 0;
-let bgTransition = {
-  active: false,
-  fromIndex: 0,
-  toIndex: 0,
-  startTime: 0,
-  duration: BG_FADE_MS,
-};
+const BG_SPEED = 0.6;
 
-function desiredBgIndex() {
-  return Math.floor(score / BG_PHASE_SCORE) % bgPhases.length;
-}
+let bgMode = "day";          // "day" or "night"
+let bgBlend = 0;             // 0 day -> 1 night
+let targetBlend = 0;
+let lastModeSwitchAt = 0;
+const BLEND_SPEED = 0.0012;  // blend per ms
 
-function startBgTransition(toIndex, timestamp) {
-  bgTransition.active = true;
-  bgTransition.fromIndex = bgPhaseIndex;
-  bgTransition.toIndex = toIndex;
-  bgTransition.startTime = timestamp;
+function computeTargetBlend() {
+  // switch every 10 points: 0-9 day, 10-19 night, 20-29 day, ...
+  const segment = Math.floor(score / 10);
+  return segment % 2 === 0 ? 0 : 1;
 }
 
 function updateBackground(timestamp) {
   if (gameState === "playing") {
-    const currentPhase = bgPhases[bgPhaseIndex];
-    const speed = BG_SPEED + currentPhase.speedBonus;
-    bgX -= speed;
+    bgX -= BG_SPEED;
     if (bgX <= -canvas.width) bgX = 0;
   }
 
-  const wantIndex = desiredBgIndex();
-  if (!bgTransition.active && wantIndex !== bgPhaseIndex) {
-    startBgTransition(wantIndex, timestamp);
-  }
-
-  if (bgTransition.active) {
-    const t = (timestamp - bgTransition.startTime) / bgTransition.duration;
-    if (t >= 1) {
-      bgPhaseIndex = bgTransition.toIndex;
-      bgTransition.active = false;
+  targetBlend = computeTargetBlend();
+  const dir = targetBlend > bgBlend ? 1 : -1;
+  if (bgBlend !== targetBlend) {
+    bgBlend += dir * BLEND_SPEED * (timestamp - lastBgUpdateTs);
+    if ((dir > 0 && bgBlend > targetBlend) || (dir < 0 && bgBlend < targetBlend)) {
+      bgBlend = targetBlend;
     }
   }
 }
+let lastBgUpdateTs = performance.now();
 
-function drawBgImage(img, alpha = 1) {
-  if (!img || !img.complete || img.naturalWidth === 0) return false;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.drawImage(img, bgX, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, bgX + canvas.width, 0, canvas.width, canvas.height);
-  ctx.restore();
-  return true;
-}
-
-function drawBackground(timestamp) {
-  ctx.fillStyle = "#0b1020";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  if (!bgTransition.active) {
-    const phase = bgPhases[bgPhaseIndex];
-    const ok = drawBgImage(phase.img, 1);
-
-    if (ok && phase.tintAlpha > 0) {
-      ctx.save();
-      ctx.globalAlpha = phase.tintAlpha;
-      ctx.fillStyle = "#000814";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.restore();
-    }
-    return;
+function drawBackground() {
+  // draw day layer
+  if (bgDay.complete && bgDay.naturalWidth) {
+    ctx.globalAlpha = 1;
+    ctx.drawImage(bgDay, bgX, 0, canvas.width, canvas.height);
+    ctx.drawImage(bgDay, bgX + canvas.width, 0, canvas.width, canvas.height);
+  } else {
+    ctx.fillStyle = "#0b1020";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  const t = Math.min(
-    Math.max((timestamp - bgTransition.startTime) / bgTransition.duration, 0),
-    1
-  );
-
-  const fromPhase = bgPhases[bgTransition.fromIndex];
-  const toPhase = bgPhases[bgTransition.toIndex];
-
-  drawBgImage(fromPhase.img, 1 - t);
-  drawBgImage(toPhase.img, t);
+  // blend night layer on top
+  if (bgNight.complete && bgNight.naturalWidth && bgBlend > 0) {
+    ctx.globalAlpha = bgBlend;
+    ctx.drawImage(bgNight, bgX, 0, canvas.width, canvas.height);
+    ctx.drawImage(bgNight, bgX + canvas.width, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+  }
 }
 
 // ---------------------------
@@ -180,99 +136,68 @@ explosionImg.src = "assets/explosion/boom.png";
 // ---------------------------
 // Audio
 // ---------------------------
-const VOLS = {
-  bgm: 0.35,
-  ending: 0.8,
-  bomb: 0.9,
-  flap: 0.6,
-};
+const VOLS = { bgm: 0.35, ending: 0.8, bomb: 0.9, flap: 0.6 };
 
-// Two BGMs
 const bgmDefault = new Audio("assets/audio/bgm.mp3");
-bgmDefault.loop = true;
-bgmDefault.volume = VOLS.bgm;
+bgmDefault.loop = true; bgmDefault.volume = VOLS.bgm;
 
-const bgmHead2 = new Audio("assets/audio/bgm-head2.mp3"); // add this file
-bgmHead2.loop = true;
-bgmHead2.volume = VOLS.bgm;
+// head2-specific bgm (rename if needed)
+const bgmHead2 = new Audio("assets/audio/bgm-head2.mp3");
+bgmHead2.loop = true; bgmHead2.volume = VOLS.bgm;
 
-// We play only one at a time
-let currentBgm = bgmDefault;
+const ending1 = new Audio("assets/audio/random-ending1.mp3");
+const ending2 = new Audio("assets/audio/random-ending2.mp3");
+const ending3 = new Audio("assets/audio/random-ending3.mp3");
 
-const endingAudios = [
-  new Audio("assets/audio/random-ending1.mp3"),
-  new Audio("assets/audio/random-ending2.mp3"),
-  new Audio("assets/audio/random-ending3.mp3"),
-];
-
-// Extra endings only for head2 (4–6)
-const head2ExtraEndings = [
-  new Audio("assets/audio/random-ending4.mp3"),
-  new Audio("assets/audio/random-ending5.mp3"),
-  new Audio("assets/audio/random-ending6.mp3"),
-];
-
-const allEndings = [...endingAudios, ...head2ExtraEndings];
-allEndings.forEach(a => (a.volume = VOLS.ending));
+// extra 3 for head2 (change names if yours differ)
+const ending4 = new Audio("assets/audio/random-ending4.mp3");
+const ending5 = new Audio("assets/audio/random-ending5.mp3");
+const ending6 = new Audio("assets/audio/random-ending6.mp3");
 
 const bombAudio = new Audio("assets/audio/bomb-blast.mp3");
 bombAudio.volume = VOLS.bomb;
 
 const flapAudio = new Audio("assets/audio/flap.mp3");
-flapAudio.volume = VOLS.flap;
-flapAudio.preload = "auto";
+flapAudio.volume = VOLS.flap; flapAudio.preload = "auto";
+
+const endingAudiosHead13 = [ending1];
+const endingAudiosHead2  = [ending1, ending2, ending3, ending4, ending5, ending6];
+[ending1, ending2, ending3, ending4, ending5, ending6].forEach(a => a.volume = VOLS.ending);
 
 let audioReady = false;
 let bgmWanted = false;
 let muted = false;
+let currentBgm = bgmDefault;
 
 function applyMuteState() {
-  const vol = muted ? 0 : VOLS.bgm;
-  bgmDefault.volume = vol;
-  bgmHead2.volume = vol;
-
-  allEndings.forEach(a => (a.volume = muted ? 0 : VOLS.ending));
-  bombAudio.volume = muted ? 0 : VOLS.bomb;
-  flapAudio.volume = muted ? 0 : VOLS.flap;
+  const v = muted ? 0 : 1;
+  bgmDefault.volume = VOLS.bgm * v;
+  bgmHead2.volume = VOLS.bgm * v;
+  [ending1,ending2,ending3,ending4,ending5,ending6].forEach(a => a.volume = VOLS.ending * v);
+  bombAudio.volume = VOLS.bomb * v;
+  flapAudio.volume = VOLS.flap * v;
 }
 
+// unlock on first user gesture
 function initAudioFromGesture() {
   if (audioReady) return;
   audioReady = true;
 
-  [bgmDefault, bgmHead2, bombAudio, flapAudio, ...allEndings].forEach(a => a.load());
+  [
+    bgmDefault, bgmHead2, bombAudio, flapAudio,
+    ending1, ending2, ending3, ending4, ending5, ending6
+  ].forEach(a => a.load());
 
   const unlockOne = (a) =>
-    a.play()
-      .then(() => {
-        a.pause();
-        a.currentTime = 0;
-      })
-      .catch(() => {});
+    a.play().then(()=>{ a.pause(); a.currentTime=0; }).catch(()=>{});
   unlockOne(bgmDefault);
   unlockOne(bgmHead2);
   unlockOne(bombAudio);
   unlockOne(flapAudio);
-  allEndings.forEach(unlockOne);
+  [ending1,ending2,ending3,ending4,ending5,ending6].forEach(unlockOne);
 
   applyMuteState();
   if (bgmWanted) playBgm();
-}
-
-function setBgmForHead(headId, autoPlay = false) {
-  const wanted = (headId === 2) ? bgmHead2 : bgmDefault;
-  if (currentBgm === wanted) return;
-
-  // stop old bgm
-  currentBgm.pause();
-  currentBgm.currentTime = 0;
-
-  currentBgm = wanted;
-
-  if (autoPlay && gameState === "playing" && bgmWanted && audioReady && !muted) {
-    currentBgm.currentTime = 0;
-    currentBgm.play().catch(() => {});
-  }
 }
 
 function playBgm() {
@@ -281,36 +206,19 @@ function playBgm() {
   if (!currentBgm.paused) return;
 
   currentBgm.currentTime = 0;
-  currentBgm.play().catch(() => {});
+  currentBgm.play().catch(() => {}); // update() will retry
 }
 
 function stopBgm() {
-  currentBgm.pause();
-  currentBgm.currentTime = 0;
+  bgmDefault.pause(); bgmDefault.currentTime = 0;
+  bgmHead2.pause(); bgmHead2.currentTime = 0;
   bgmWanted = false;
-}
-
-function stopAllAudio() {
-  stopBgm();
-
-  allEndings.forEach(a => {
-    a.pause();
-    a.currentTime = 0;
-    a.onended = null;
-  });
-
-  bombAudio.pause();
-  bombAudio.currentTime = 0;
-  bombAudio.onended = null;
-
-  flapAudio.pause();
-  flapAudio.currentTime = 0;
 }
 
 // ---------------------------
 // Game state
 // ---------------------------
-let gameState = "ready"; // "ready" | "playing" | "paused" | "crash" | "gameover"
+let gameState = "ready"; // ready | playing | paused | crash | gameover
 let score = 0;
 let crashSequence = null;
 
@@ -324,17 +232,14 @@ function startShake(intensity, durationMs) {
   shake.duration = durationMs;
   shake.intensity = intensity;
 }
-
 function updateShake(dt) {
   if (shake.time <= 0) return { x: 0, y: 0 };
   shake.time = Math.max(0, shake.time - dt);
-
-  const k = shake.duration > 0 ? (shake.time / shake.duration) : 0;
+  const k = shake.duration ? (shake.time / shake.duration) : 0;
   const mag = shake.intensity * k;
-
   return {
-    x: (Math.random() * 2 - 1) * mag,
-    y: (Math.random() * 2 - 1) * mag,
+    x: (Math.random()*2-1)*mag,
+    y: (Math.random()*2-1)*mag
   };
 }
 
@@ -347,109 +252,92 @@ const headSpritePaths = [
   "assets/heads/head3.png",
 ];
 
-const headSprites = headSpritePaths.map((p, i) => {
-  const img = new Image();
-  img.src = p;
-  img._headId = i + 1; // 1,2,3
-  return img;
+const headSprites = headSpritePaths.map(p => {
+  const img = new Image(); img.src = p; return img;
 });
-
 const headMeta = new Map();
 
 function computeVisibleBBox(img) {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
-
+  const iw = img.naturalWidth, ih = img.naturalHeight;
   const off = document.createElement("canvas");
-  off.width = iw;
-  off.height = ih;
+  off.width = iw; off.height = ih;
   const octx = off.getContext("2d");
   octx.drawImage(img, 0, 0);
 
   let data;
-  try {
-    data = octx.getImageData(0, 0, iw, ih).data;
-  } catch {
-    return { sx: 0, sy: 0, sw: iw, sh: ih };
-  }
+  try { data = octx.getImageData(0, 0, iw, ih).data; }
+  catch { return { sx:0, sy:0, sw:iw, sh:ih }; }
 
-  let minX = iw, minY = ih, maxX = -1, maxY = -1;
-  for (let y = 0; y < ih; y++) {
-    for (let x = 0; x < iw; x++) {
-      const a = data[(y * iw + x) * 4 + 3];
-      if (a > 10) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
+  let minX=iw, minY=ih, maxX=-1, maxY=-1;
+  for (let y=0;y<ih;y++) for (let x=0;x<iw;x++){
+    const a = data[(y*iw + x)*4 + 3];
+    if (a>10){
+      if(x<minX)minX=x; if(y<minY)minY=y;
+      if(x>maxX)maxX=x; if(y>maxY)maxY=y;
     }
   }
+  if (maxX<0) return { sx:0, sy:0, sw:iw, sh:ih };
 
-  if (maxX < 0 || maxY < 0) {
-    return { sx: 0, sy: 0, sw: iw, sh: ih };
-  }
+  const sw=maxX-minX+1, sh=maxY-minY+1;
+  const pad=0.05, padX=sw*pad, padY=sh*pad;
 
-  const sw = maxX - minX + 1;
-  const sh = maxY - minY + 1;
-
-  const pad = 0.05;
-  const padX = sw * pad;
-  const padY = sh * pad;
-
-  const sx = Math.max(0, minX - padX);
-  const sy = Math.max(0, minY - padY);
-  const ex = Math.min(iw, maxX + padX);
-  const ey = Math.min(ih, maxY + padY);
-
-  return { sx, sy, sw: ex - sx, sh: ey - sy };
+  const sx=Math.max(0,minX-padX), sy=Math.max(0,minY-padY);
+  const ex=Math.min(iw,maxX+padX), ey=Math.min(ih,maxY+padY);
+  return { sx, sy, sw: ex-sx, sh: ey-sy };
 }
 
 headSprites.forEach(img => {
-  img.onload = () => {
-    headMeta.set(img, computeVisibleBBox(img));
-  };
+  img.onload = () => headMeta.set(img, computeVisibleBBox(img));
 });
 
 function randomHeadSprite() {
-  return headSprites[Math.floor(Math.random() * headSprites.length)];
+  const idx = Math.floor(Math.random()*headSprites.length);
+  return { img: headSprites[idx], index: idx };
 }
 
 function drawNormalizedHead(img, cx, cy, size) {
   const meta = headMeta.get(img);
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
-
+  const iw = img.naturalWidth, ih = img.naturalHeight;
   const sx = meta ? meta.sx : 0;
   const sy = meta ? meta.sy : 0;
   const sw = meta ? meta.sw : iw;
   const sh = meta ? meta.sh : ih;
 
   const scale = Math.max(size / sw, size / sh);
-  const dw = sw * scale;
-  const dh = sh * scale;
+  const dw = sw*scale, dh = sh*scale;
 
-  ctx.drawImage(img, sx, sy, sw, sh, cx - dw / 2, cy - dh / 2, dw, dh);
+  ctx.drawImage(img, sx, sy, sw, sh, cx-dw/2, cy-dh/2, dw, dh);
 }
 
 // ---------------------------
 // Player
 // ---------------------------
 const player = {
-  x: 120,
-  y: canvas.height / 2,
-  radius: PLAYER_RADIUS,
-  vy: 0,
+  x: 120, y: canvas.height/2,
+  radius: PLAYER_RADIUS, vy: 0,
   sprite: null,
+  spriteIndex: 0, // 0=head1, 1=head2, 2=head3
 };
 
-function resetPlayer(autoPlayBgm = false) {
-  player.y = canvas.height / 2;
-  player.vy = 0;
-  player.sprite = randomHeadSprite();
+function setPlayerHead() {
+  const pick = randomHeadSprite();
+  player.sprite = pick.img;
+  player.spriteIndex = pick.index;
 
-  const headId = player.sprite?._headId || 2;
-  setBgmForHead(headId, autoPlayBgm);
+  // switch bgm source based on head
+  currentBgm = (player.spriteIndex === 1) ? bgmHead2 : bgmDefault;
+
+  // if already playing, restart bgm with correct track
+  if (gameState === "playing") {
+    stopBgm();
+    playBgm();
+  }
+}
+
+function resetPlayer() {
+  player.y = canvas.height/2;
+  player.vy = 0;
+  setPlayerHead();
 }
 
 // ---------------------------
@@ -460,11 +348,8 @@ const obstacleSpritePaths = [
   "assets/obstacles/obs2.png",
   "assets/obstacles/obs3.png",
 ];
-
 const obstacleSprites = obstacleSpritePaths.map(p => {
-  const img = new Image();
-  img.src = p;
-  return img;
+  const img = new Image(); img.src = p; return img;
 });
 
 let obstacles = [];
@@ -472,35 +357,26 @@ let lastSpawnTime = 0;
 let nextSpawnDelay = SPAWN_INTERVAL;
 
 function randomObstacleSprite() {
-  return obstacleSprites[Math.floor(Math.random() * obstacleSprites.length)];
+  return obstacleSprites[Math.floor(Math.random()*obstacleSprites.length)];
 }
 
 function spawnObstacle() {
   const groundY = canvas.height - GROUND_H;
   const { speed, gap } = getDifficulty();
 
-  const minGapY = 120;
-  const maxGapY = groundY - 120;
-  const gapY = minGapY + Math.random() * (maxGapY - minGapY);
+  const minGapY=120, maxGapY=groundY-120;
+  const gapY = minGapY + Math.random()*(maxGapY-minGapY);
 
-  const width = OBSTACLE_WIDTH * (0.9 + Math.random() * 0.3);
+  const width = OBSTACLE_WIDTH*(0.9+Math.random()*0.3);
 
   const moving = Math.random() < 0.15;
-  const driftAmp = moving ? (18 + Math.random() * 12) : 0;
-  const driftSpeed = moving ? (0.002 + Math.random() * 0.0015) : 0;
+  const driftAmp = moving ? (18 + Math.random()*12) : 0;
+  const driftSpeed = moving ? (0.002 + Math.random()*0.0015) : 0;
 
   obstacles.push({
-    x: canvas.width,
-    width,
-    gapY,
-    gapY0: gapY,
-    gapHeight: gap,
-    speed,
-
-    driftAmp,
-    driftSpeed,
-    bornAt: performance.now(),
-
+    x: canvas.width, width,
+    gapY, gapY0: gapY, gapHeight: gap, speed,
+    driftAmp, driftSpeed, bornAt: performance.now(),
     topSprite: randomObstacleSprite(),
     bottomSprite: randomObstacleSprite(),
     scored: false,
@@ -508,54 +384,105 @@ function spawnObstacle() {
 }
 
 // ---------------------------
-// Collision helpers
+// Overlay helpers
+// ---------------------------
+function showOverlay(title, text) {
+  overlayTitle.textContent = title;
+  overlayText.textContent = text;
+  overlay.classList.remove("hidden");
+}
+function hideOverlay(){ overlay.classList.add("hidden"); }
+
+// ---------------------------
+// Collision
 // ---------------------------
 function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
-  const closestX = Math.max(rx, Math.min(cx, rx + rw));
-  const closestY = Math.max(ry, Math.min(cy, ry + rh));
-  const dx = cx - closestX;
-  const dy = cy - closestY;
-  return dx * dx + dy * dy < r * r;
+  const closestX = Math.max(rx, Math.min(cx, rx+rw));
+  const closestY = Math.max(ry, Math.min(cy, ry+rh));
+  const dx = cx-closestX, dy = cy-closestY;
+  return dx*dx + dy*dy < r*r;
 }
 
 // ---------------------------
-// Crash sequence rules
+// Ending selector by head
 // ---------------------------
-function pickEndingAudioForHead(headId) {
-  if (headId === 1 || headId === 3) return endingAudios[0];
-
-  const head2Pool = [...endingAudios, ...head2ExtraEndings];
-  return head2Pool[Math.floor(Math.random() * head2Pool.length)];
+function pickEndingAudioByHead() {
+  if (player.spriteIndex === 1) {
+    const list = endingAudiosHead2; // ALL 6 for head2
+    return list[Math.floor(Math.random()*list.length)];
+  }
+  return ending1; // head1 & head3 only ending1
 }
 
+// ---------------------------
+// Crash sequence (FIXED ordering)
+// ---------------------------
 function startCrashSequence(timestamp) {
   if (gameState !== "playing") return;
   gameState = "crash";
 
   stopBgm();
 
-  const headId = player.sprite?._headId || 2;
-  const endingAudio = pickEndingAudioForHead(headId);
-
+  const endingAudio = pickEndingAudioByHead();
   endingAudio.currentTime = 0;
-  if (!muted) endingAudio.play().catch(() => {});
 
   crashSequence = {
     phase: "ending",
     endingAudio,
+    endingStartedAt: timestamp,
+    endingFallbackEnd: null,
     explosionStartTime: null,
     bombFallbackEnd: null,
   };
 
+  // set onended BEFORE play to avoid race
   endingAudio.onended = () => {
     if (!crashSequence || gameState !== "crash") return;
     startBombPhase(performance.now());
   };
 
-  if (muted) startBombPhase(performance.now());
+  if (muted) {
+    startBombPhase(performance.now());
+    return;
+  }
+
+  // Try to play ending audio. If blocked, retry once, then fallback.
+  const tryPlayEnding = () => {
+    const p = endingAudio.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => {
+        // schedule fallback based on duration if onended never fires
+        const ms =
+          endingAudio.duration && !isNaN(endingAudio.duration)
+            ? endingAudio.duration * 1000 + 120
+            : 1400; // safe default
+        crashSequence.endingFallbackEnd = performance.now() + ms;
+      }).catch(() => {
+        // blocked/failed -> retry a bit later, DON'T bomb immediately
+        setTimeout(() => {
+          if (!crashSequence || crashSequence.phase !== "ending") return;
+          const p2 = endingAudio.play();
+          if (p2 && typeof p2.catch === "function") {
+            p2.catch(() => {
+              // still failed -> use fallback timer
+              crashSequence.endingFallbackEnd = performance.now() + 1200;
+            });
+          } else {
+            crashSequence.endingFallbackEnd = performance.now() + 1200;
+          }
+        }, 120);
+      });
+    } else {
+      crashSequence.endingFallbackEnd = performance.now() + 1400;
+    }
+  };
+
+  tryPlayEnding();
 }
 
 function startBombPhase(timestamp) {
+  if (!crashSequence || crashSequence.phase !== "ending") return;
+
   crashSequence.phase = "bomb";
   crashSequence.explosionStartTime = timestamp;
 
@@ -567,7 +494,7 @@ function startBombPhase(timestamp) {
   startShake(10, fallbackMs);
 
   bombAudio.currentTime = 0;
-  if (!muted) bombAudio.play().catch(() => {});
+  if (!muted) bombAudio.play().catch(()=>{});
   bombAudio.onended = () => {
     if (gameState === "crash") finishGameOver();
   };
@@ -585,45 +512,28 @@ function finishGameOver() {
 }
 
 // ---------------------------
-// Overlay helpers
-// ---------------------------
-function showOverlay(title, text) {
-  overlayTitle.textContent = title;
-  overlayText.textContent = text;
-  overlay.classList.remove("hidden");
-}
-function hideOverlay() {
-  overlay.classList.add("hidden");
-}
-
-// ---------------------------
 // Mute button + input
 // ---------------------------
-const muteBtn = { x: canvas.width - 95, y: 8, w: 85, h: 28 };
+const muteBtn = { x: canvas.width-95, y: 8, w: 85, h: 28 };
 
-function pointInRect(px, py, r) {
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+function pointInRect(px, py, r){
+  return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h;
 }
-
-function getCanvasCoords(clientX, clientY) {
+function getCanvasCoords(clientX, clientY){
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-
-  return {
-    x: (clientX - rect.left) * scaleX,
-    y: (clientY - rect.top) * scaleY,
-  };
+  const scaleX = canvas.width/rect.width;
+  const scaleY = canvas.height/rect.height;
+  return { x:(clientX-rect.left)*scaleX, y:(clientY-rect.top)*scaleY };
 }
 
-function toggleMute() {
+function toggleMute(){
   muted = !muted;
   applyMuteState();
   if (muted) stopBgm();
   else if (gameState === "playing") playBgm();
 }
 
-function flap() {
+function flap(){
   initAudioFromGesture();
 
   if (gameState === "paused") {
@@ -637,152 +547,136 @@ function flap() {
     lastSpawnTime = performance.now();
     nextSpawnDelay = SPAWN_INTERVAL;
     bgX = 0;
-
-    // ensure correct BGM for this run’s head
-    resetPlayer(false);
     playBgm();
   }
 
   if (gameState === "playing") {
     player.vy = FLAP;
-
     if (audioReady && !muted) {
       flapAudio.currentTime = 0;
-      flapAudio.play().catch(() => {});
+      flapAudio.play().catch(()=>{});
     }
   }
 
-  if (gameState === "gameover") {
-    restartGame();
-  }
+  if (gameState === "gameover") restartGame();
 }
 
-function handleTap(clientX, clientY) {
-  if (clientX != null && clientY != null) {
-    const { x, y } = getCanvasCoords(clientX, clientY);
-    if (pointInRect(x, y, muteBtn)) {
-      toggleMute();
-      return;
+function handleTap(clientX, clientY){
+  if (clientX!=null && clientY!=null){
+    const {x,y} = getCanvasCoords(clientX, clientY);
+    if (pointInRect(x,y,muteBtn)){
+      toggleMute(); return;
     }
   }
   flap();
 }
-
-function onTapEvent(e) {
+function onTapEvent(e){
   e.preventDefault();
-
-  if (e.touches && e.touches.length > 0) {
-    const t = e.touches[0];
-    handleTap(t.clientX, t.clientY);
-    return;
+  if (e.touches && e.touches.length){
+    const t=e.touches[0]; handleTap(t.clientX,t.clientY); return;
   }
-
-  if (e.clientX != null && e.clientY != null) {
-    handleTap(e.clientX, e.clientY);
-    return;
+  if (e.clientX!=null && e.clientY!=null){
+    handleTap(e.clientX,e.clientY); return;
   }
-
   flap();
 }
 
 if (window.PointerEvent) {
-  container.addEventListener("pointerdown", onTapEvent, { passive: false });
+  container.addEventListener("pointerdown", onTapEvent, { passive:false });
 } else {
-  container.addEventListener("touchstart", onTapEvent, { passive: false });
+  container.addEventListener("touchstart", onTapEvent, { passive:false });
   container.addEventListener("mousedown", onTapEvent);
 }
 
-window.addEventListener("keydown", e => {
-  if (e.code === "Space" || e.code === "ArrowUp") {
-    e.preventDefault();
-    flap();
+window.addEventListener("keydown", e=>{
+  if (e.code==="Space"||e.code==="ArrowUp"){
+    e.preventDefault(); flap();
   }
-  if (e.code === "KeyP" && (gameState === "playing" || gameState === "paused")) {
+  if (e.code==="KeyP" && (gameState==="playing"||gameState==="paused")){
     e.preventDefault();
-    gameState = gameState === "playing" ? "paused" : "playing";
-    if (gameState === "playing" && bgmWanted && !muted) playBgm();
+    gameState = gameState==="playing" ? "paused" : "playing";
+    if (gameState==="playing" && bgmWanted && !muted) playBgm();
   }
 });
 
 // ---------------------------
-// Update
+// Update loop
 // ---------------------------
 function update(timestamp) {
+  // background
   updateBackground(timestamp);
+  lastBgUpdateTs = timestamp;
 
-  if (gameState === "playing" && bgmWanted && audioReady && currentBgm.paused && !muted) {
-    currentBgm.play().catch(() => {});
+  // auto-retry bgm if blocked
+  if (gameState==="playing" && bgmWanted && audioReady && currentBgm.paused && !muted){
+    currentBgm.play().catch(()=>{});
   }
 
-  if (gameState === "paused") return;
+  if (gameState==="paused") return;
 
-  if (gameState === "playing") {
+  if (gameState==="playing"){
     player.vy += GRAVITY;
     if (player.vy > MAX_FALL_SPEED) player.vy = MAX_FALL_SPEED;
     player.y += player.vy;
 
     const groundY = canvas.height - GROUND_H;
 
-    if (player.y + player.radius >= groundY) {
+    if (player.y + player.radius >= groundY){
       player.y = groundY - player.radius;
       startCrashSequence(timestamp);
       return;
     }
-
-    if (player.y - player.radius <= 0) {
-      player.y = player.radius;
-      player.vy = 0;
+    if (player.y - player.radius <= 0){
+      player.y = player.radius; player.vy = 0;
     }
 
-    if (timestamp - lastSpawnTime > nextSpawnDelay) {
+    if (timestamp - lastSpawnTime > nextSpawnDelay){
       spawnObstacle();
       lastSpawnTime = timestamp;
 
       const { spawnBase, easy } = getDifficulty();
-      nextSpawnDelay =
-        spawnBase * (easy ? (0.95 + Math.random() * 0.15)
-                          : (0.85 + Math.random() * 0.30));
+      nextSpawnDelay = spawnBase * (easy ? (0.95+Math.random()*0.15)
+                                         : (0.85+Math.random()*0.30));
     }
 
-    obstacles.forEach(ob => {
+    obstacles.forEach(ob=>{
       ob.x -= ob.speed;
 
-      if (ob.driftAmp > 0) {
-        const t = timestamp - ob.bornAt;
-        ob.gapY = ob.gapY0 + Math.sin(t * ob.driftSpeed) * ob.driftAmp;
-
-        const minGapY = 120;
-        const maxGapY = groundY - 120;
+      if (ob.driftAmp>0){
+        const t=timestamp - ob.bornAt;
+        ob.gapY = ob.gapY0 + Math.sin(t*ob.driftSpeed)*ob.driftAmp;
+        const minGapY=120, maxGapY=groundY-120;
         ob.gapY = Math.max(minGapY, Math.min(maxGapY, ob.gapY));
       }
 
-      const topH = ob.gapY - ob.gapHeight / 2;
-      const bottomY = ob.gapY + ob.gapHeight / 2;
+      const topH = ob.gapY - ob.gapHeight/2;
+      const bottomY = ob.gapY + ob.gapHeight/2;
       const bottomH = groundY - bottomY;
 
-      if (circleRectCollision(player.x, player.y, player.radius, ob.x, 0, ob.width, topH)) {
-        startCrashSequence(timestamp);
-      }
-      if (circleRectCollision(player.x, player.y, player.radius, ob.x, bottomY, ob.width, bottomH)) {
+      if (circleRectCollision(player.x,player.y,player.radius, ob.x,0, ob.width,topH) ||
+          circleRectCollision(player.x,player.y,player.radius, ob.x,bottomY, ob.width,bottomH)){
         startCrashSequence(timestamp);
       }
 
-      if (!ob.scored && ob.x + ob.width < player.x) {
-        ob.scored = true;
-        score += 1;
-
-        if (score > bestScore) {
-          bestScore = score;
-          saveBestScore();
-        }
+      if (!ob.scored && ob.x + ob.width < player.x){
+        ob.scored = true; score += 1;
+        if (score > bestScore){ bestScore = score; saveBestScore(); }
       }
     });
 
-    obstacles = obstacles.filter(ob => ob.x + ob.width > 0);
+    obstacles = obstacles.filter(ob=>ob.x + ob.width > 0);
   }
 
-  if (gameState === "crash" && crashSequence?.phase === "bomb") {
-    if (timestamp >= crashSequence.bombFallbackEnd) {
+  // ENDING fallback: if onended never fired, proceed after timer
+  if (gameState==="crash" && crashSequence?.phase==="ending"){
+    if (crashSequence.endingFallbackEnd && timestamp >= crashSequence.endingFallbackEnd){
+      startBombPhase(timestamp);
+    }
+  }
+
+  // bomb fallback
+  if (gameState==="crash" && crashSequence?.phase==="bomb"){
+    if (timestamp >= crashSequence.bombFallbackEnd){
       finishGameOver();
     }
   }
@@ -791,38 +685,37 @@ function update(timestamp) {
 // ---------------------------
 // Draw
 // ---------------------------
-function drawGround() {
-  ctx.fillStyle = "#111";
-  ctx.fillRect(0, canvas.height - GROUND_H, canvas.width, GROUND_H);
+function drawGround(){
+  ctx.fillStyle="#111";
+  ctx.fillRect(0, canvas.height-GROUND_H, canvas.width, GROUND_H);
 }
 
-function drawPlayer() {
+function drawPlayer(){
   const img = player.sprite;
-
-  if (img && img.complete && img.naturalWidth !== 0) {
+  if (img && img.complete && img.naturalWidth){
     drawNormalizedHead(img, player.x, player.y, PLAYER_DRAW_SIZE);
   } else {
     ctx.beginPath();
-    ctx.fillStyle = "#ffd166";
-    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    ctx.fillStyle="#ffd166";
+    ctx.arc(player.x,player.y,player.radius,0,Math.PI*2);
     ctx.fill();
   }
 }
 
-function drawObstacleSpriteOrRect(img, x, y, w, h) {
-  if (img && img.complete && img.naturalWidth !== 0) {
-    ctx.drawImage(img, x, y, w, h);
+function drawObstacleSpriteOrRect(img,x,y,w,h){
+  if (img && img.complete && img.naturalWidth){
+    ctx.drawImage(img,x,y,w,h);
   } else {
-    ctx.fillStyle = "#ff6b6b";
-    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle="#ff6b6b";
+    ctx.fillRect(x,y,w,h);
   }
 }
 
-function drawObstacles() {
+function drawObstacles(){
   const groundY = canvas.height - GROUND_H;
-  obstacles.forEach(ob => {
-    const topH = ob.gapY - ob.gapHeight / 2;
-    const bottomY = ob.gapY + ob.gapHeight / 2;
+  obstacles.forEach(ob=>{
+    const topH = ob.gapY - ob.gapHeight/2;
+    const bottomY = ob.gapY + ob.gapHeight/2;
     const bottomH = groundY - bottomY;
 
     drawObstacleSpriteOrRect(ob.topSprite, ob.x, 0, ob.width, topH);
@@ -830,71 +723,71 @@ function drawObstacles() {
   });
 }
 
-function drawExplosion(timestamp) {
-  if (!crashSequence || crashSequence.phase !== "bomb") return;
+function drawExplosion(timestamp){
+  if (!crashSequence || crashSequence.phase!=="bomb") return;
 
   const duration = crashSequence.bombFallbackEnd - crashSequence.explosionStartTime;
   const t = (timestamp - crashSequence.explosionStartTime) / duration;
-  const progress = Math.min(Math.max(t, 0), 1);
+  const progress = Math.min(Math.max(t,0),1);
 
-  if (explosionImg.complete && explosionImg.naturalWidth !== 0) {
-    const maxSize = 420;
-    const size = maxSize * (0.3 + 0.7 * progress);
-    ctx.globalAlpha = 1 - progress * 0.2;
-    ctx.drawImage(
-      explosionImg,
-      canvas.width / 2 - size / 2,
-      canvas.height / 2 - size / 2,
-      size,
-      size
-    );
-    ctx.globalAlpha = 1;
+  if (explosionImg.complete && explosionImg.naturalWidth){
+    const maxSize=420;
+    const size=maxSize*(0.3+0.7*progress);
+    ctx.globalAlpha=1-progress*0.2;
+    ctx.drawImage(explosionImg, canvas.width/2-size/2, canvas.height/2-size/2, size, size);
+    ctx.globalAlpha=1;
     return;
   }
-}
 
-function drawMuteButton() {
+  const cx=canvas.width/2, cy=canvas.height/2;
+  const maxR=260*progress;
+
   ctx.save();
-  ctx.globalAlpha = 0.85;
-  ctx.fillStyle = muted ? "#7a0f0f" : "#0f7a2a";
-  ctx.fillRect(muteBtn.x, muteBtn.y, muteBtn.w, muteBtn.h);
-
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = "#fff";
-  ctx.font = "14px Arial";
-  ctx.fillText(muted ? "MUTED" : "SOUND ON", muteBtn.x + 10, muteBtn.y + 19);
+  ctx.globalAlpha=0.9;
+  ctx.beginPath(); ctx.fillStyle="#ffb703"; ctx.arc(cx,cy,maxR,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.fillStyle="#fb8500"; ctx.arc(cx,cy,maxR*0.65,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.fillStyle="#ff006e"; ctx.arc(cx,cy,maxR*0.35,0,Math.PI*2); ctx.fill();
   ctx.restore();
 }
 
-function drawUI() {
-  ctx.fillStyle = "#fff";
-  ctx.font = "22px Arial";
-  ctx.fillText(score, canvas.width / 2 - 5, 50);
+function drawMuteButton(){
+  ctx.save();
+  ctx.globalAlpha=0.85;
+  ctx.fillStyle = muted ? "#7a0f0f" : "#0f7a2a";
+  ctx.fillRect(muteBtn.x, muteBtn.y, muteBtn.w, muteBtn.h);
+  ctx.globalAlpha=1;
+  ctx.fillStyle="#fff";
+  ctx.font="14px Arial";
+  ctx.fillText(muted ? "MUTED":"SOUND ON", muteBtn.x+10, muteBtn.y+19);
+  ctx.restore();
+}
+
+function drawUI(){
+  ctx.fillStyle="#fff";
+  ctx.font="22px Arial";
+  ctx.fillText(score, canvas.width/2-5, 50);
 
   const { level } = getDifficulty();
-  ctx.font = "14px Arial";
-  ctx.fillText(`Level: ${level + 1}`, 10, 20);
+  ctx.font="14px Arial";
+  ctx.fillText(`Level: ${level+1}`, 10, 20);
   ctx.fillText(`Best: ${bestScore}`, 10, 40);
 
-  const phaseName = bgPhases[bgPhaseIndex].name.toUpperCase();
-  ctx.fillText(`Time: ${phaseName}`, 10, 60);
-
-  if (gameState === "ready") {
-    ctx.font = "16px Arial";
+  if (gameState==="ready"){
+    ctx.font="16px Arial";
     ctx.fillText("Tap / Space to Start", 120, 120);
-    ctx.font = "14px Arial";
+    ctx.font="14px Arial";
     ctx.fillText(`Best: ${bestScore}`, 120, 145);
   }
 
-  if (gameState === "paused") {
+  if (gameState==="paused"){
     ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.font = "28px Arial";
-    ctx.fillText("PAUSED", canvas.width / 2 - 60, canvas.height / 2);
-    ctx.font = "14px Arial";
-    ctx.fillText("Press P to Resume", canvas.width / 2 - 70, canvas.height / 2 + 25);
+    ctx.fillStyle="rgba(0,0,0,0.55)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle="#fff";
+    ctx.font="28px Arial";
+    ctx.fillText("PAUSED", canvas.width/2-60, canvas.height/2);
+    ctx.font="14px Arial";
+    ctx.fillText("Press P to Resume", canvas.width/2-70, canvas.height/2+25);
     ctx.restore();
   }
 
@@ -904,45 +797,43 @@ function drawUI() {
 // ---------------------------
 // Restart
 // ---------------------------
-function restartGame() {
-  gameState = "ready";
-  score = 0;
-  obstacles = [];
-  crashSequence = null;
-  lastSpawnTime = 0;
-  nextSpawnDelay = SPAWN_INTERVAL;
+function restartGame(){
+  gameState="ready";
+  score=0;
+  obstacles=[];
+  crashSequence=null;
+  lastSpawnTime=0;
+  nextSpawnDelay=SPAWN_INTERVAL;
 
-  stopAllAudio();
-  resetPlayer(false);
-  bgX = 0;
-
-  bgPhaseIndex = 0;
-  bgTransition.active = false;
+  stopBgm();
+  setPlayerHead();     // pick head + set proper bgm track
+  player.vy=0; player.y=canvas.height/2;
+  bgX=0; bgBlend=0; targetBlend=0;
 
   overlay.classList.remove("bloody");
-  showOverlay("Ready", "Tap / Space to Start");
+  showOverlay("Ready","Tap / Space to Start");
 }
 
 // ---------------------------
 // Main loop
 // ---------------------------
-let prevTimestamp = 0;
-function gameLoop(timestamp) {
+let prevTimestamp=0;
+function gameLoop(timestamp){
   const dt = timestamp - prevTimestamp;
   prevTimestamp = timestamp;
 
   update(timestamp);
 
   const offset =
-    gameState === "crash" && crashSequence?.phase === "bomb"
+    gameState==="crash" && crashSequence?.phase==="bomb"
       ? updateShake(dt)
-      : { x: 0, y: 0 };
+      : {x:0,y:0};
 
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.save();
   ctx.translate(offset.x, offset.y);
 
-  drawBackground(timestamp);
+  drawBackground();
   drawExplosion(timestamp);
   drawObstacles();
   drawGround();
