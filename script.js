@@ -1,5 +1,7 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+
+const container = document.getElementById("game-container");
 const overlay = document.getElementById("overlay");
 const overlayTitle = document.getElementById("overlay-title");
 const overlayText = document.getElementById("overlay-text");
@@ -81,7 +83,7 @@ const explosionImg = new Image();
 explosionImg.src = "assets/explosion/boom.png";
 
 // ---------------------------
-// Audio (BGM + endings + bomb + flap SFX)
+// Audio (BGM + endings + bomb + flap)
 // ---------------------------
 const VOLS = {
   bgm: 0.35,
@@ -104,16 +106,14 @@ endingAudios.forEach(a => (a.volume = VOLS.ending));
 const bombAudio = new Audio("assets/audio/bomb-blast.mp3");
 bombAudio.volume = VOLS.bomb;
 
-// flap sfx (keep this file in assets/audio/)
 const flapAudio = new Audio("assets/audio/flap.mp3");
 flapAudio.volume = VOLS.flap;
 flapAudio.preload = "auto";
 
 let audioReady = false;
 let bgmWanted = false;
-
-// NEW: mute system
 let muted = false;
+
 function applyMuteState() {
   if (muted) {
     bgm.volume = 0;
@@ -128,13 +128,14 @@ function applyMuteState() {
   }
 }
 
-// GUARANTEED first-gesture unlock
+// unlock on first user gesture
 function initAudioFromGesture() {
   if (audioReady) return;
   audioReady = true;
 
   [bgm, bombAudio, flapAudio, ...endingAudios].forEach(a => a.load());
 
+  // play/pause unlock trick
   const unlockOne = (a) =>
     a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
   unlockOne(bgm);
@@ -145,8 +146,6 @@ function initAudioFromGesture() {
   applyMuteState();
   if (bgmWanted) playBgm();
 }
-window.addEventListener("pointerdown", initAudioFromGesture, { once: true });
-window.addEventListener("keydown", initAudioFromGesture, { once: true });
 
 function playBgm() {
   bgmWanted = true;
@@ -188,7 +187,7 @@ let score = 0;
 let crashSequence = null;
 
 // ---------------------------
-// Screen shake system
+// Screen shake
 // ---------------------------
 let shake = { time: 0, duration: 0, intensity: 0 };
 
@@ -377,85 +376,6 @@ function spawnObstacle() {
 }
 
 // ---------------------------
-// Input + Mute button hitbox
-// ---------------------------
-const muteBtn = { x: canvas.width - 95, y: 8, w: 85, h: 28 };
-
-function pointInRect(px, py, r) {
-  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
-}
-
-function toggleMute() {
-  muted = !muted;
-  applyMuteState();
-
-  if (muted) {
-    stopBgm();
-  } else {
-    if (gameState === "playing") playBgm();
-  }
-}
-
-function flap() {
-  initAudioFromGesture();
-
-  if (gameState === "paused") {
-    gameState = "playing";
-    if (bgmWanted && !muted && bgm.paused) playBgm();
-  }
-
-  if (gameState === "ready") {
-    gameState = "playing";
-    hideOverlay();
-    lastSpawnTime = performance.now();
-    nextSpawnDelay = SPAWN_INTERVAL;
-    bgX = 0;
-    playBgm();
-  }
-
-  if (gameState === "playing") {
-    player.vy = FLAP;
-
-    if (audioReady && !muted) {
-      flapAudio.currentTime = 0;
-      flapAudio.play().catch(() => {});
-    }
-  }
-
-  if (gameState === "gameover") {
-    restartGame();
-  }
-}
-
-function onPointerDown(e) {
-  e.preventDefault();
-  const rect = canvas.getBoundingClientRect();
-  const px = e.clientX - rect.left;
-  const py = e.clientY - rect.top;
-
-  if (pointInRect(px, py, muteBtn)) {
-    toggleMute();
-    return;
-  }
-
-  flap();
-}
-
-canvas.addEventListener("pointerdown", onPointerDown, { passive: false });
-
-window.addEventListener("keydown", e => {
-  if (e.code === "Space" || e.code === "ArrowUp") {
-    e.preventDefault();
-    flap();
-  }
-  if (e.code === "KeyP" && (gameState === "playing" || gameState === "paused")) {
-    e.preventDefault();
-    gameState = gameState === "playing" ? "paused" : "playing";
-    if (gameState === "playing" && bgmWanted && !muted) playBgm();
-  }
-});
-
-// ---------------------------
 // Overlay helpers
 // ---------------------------
 function showOverlay(title, text) {
@@ -503,7 +423,6 @@ function startCrashSequence(timestamp) {
     startBombPhase(performance.now());
   };
 
-  // if muted, skip straight to bomb phase
   if (muted) startBombPhase(performance.now());
 }
 
@@ -537,11 +456,117 @@ function finishGameOver() {
 }
 
 // ---------------------------
+// Mute button + Mobile-safe input
+// ---------------------------
+const muteBtn = { x: canvas.width - 95, y: 8, w: 85, h: 28 };
+
+function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+function getCanvasCoords(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
+  };
+}
+
+function toggleMute() {
+  muted = !muted;
+  applyMuteState();
+  if (muted) stopBgm();
+  else if (gameState === "playing") playBgm();
+}
+
+function flap() {
+  initAudioFromGesture();
+
+  if (gameState === "paused") {
+    gameState = "playing";
+    if (bgmWanted && !muted && bgm.paused) playBgm();
+  }
+
+  if (gameState === "ready") {
+    gameState = "playing";
+    hideOverlay();
+    lastSpawnTime = performance.now();
+    nextSpawnDelay = SPAWN_INTERVAL;
+    bgX = 0;
+    playBgm();
+  }
+
+  if (gameState === "playing") {
+    player.vy = FLAP;
+
+    if (audioReady && !muted) {
+      flapAudio.currentTime = 0;
+      flapAudio.play().catch(() => {});
+    }
+  }
+
+  if (gameState === "gameover") {
+    restartGame();
+  }
+}
+
+function handleTap(clientX, clientY) {
+  if (clientX != null && clientY != null) {
+    const { x, y } = getCanvasCoords(clientX, clientY);
+    if (pointInRect(x, y, muteBtn)) {
+      toggleMute();
+      return;
+    }
+  }
+  flap();
+}
+
+function onTapEvent(e) {
+  e.preventDefault();
+
+  if (e.touches && e.touches.length > 0) {
+    const t = e.touches[0];
+    handleTap(t.clientX, t.clientY);
+    return;
+  }
+
+  if (e.clientX != null && e.clientY != null) {
+    handleTap(e.clientX, e.clientY);
+    return;
+  }
+
+  flap();
+}
+
+if (window.PointerEvent) {
+  container.addEventListener("pointerdown", onTapEvent, { passive: false });
+} else {
+  container.addEventListener("touchstart", onTapEvent, { passive: false });
+  container.addEventListener("mousedown", onTapEvent);
+}
+
+window.addEventListener("keydown", e => {
+  if (e.code === "Space" || e.code === "ArrowUp") {
+    e.preventDefault();
+    flap();
+  }
+  if (e.code === "KeyP" && (gameState === "playing" || gameState === "paused")) {
+    e.preventDefault();
+    gameState = gameState === "playing" ? "paused" : "playing";
+    if (gameState === "playing" && bgmWanted && !muted) playBgm();
+  }
+});
+
+// ---------------------------
 // Update
 // ---------------------------
 function update(timestamp) {
   updateBackground();
 
+  // auto-retry bgm if blocked
   if (gameState === "playing" && bgmWanted && audioReady && bgm.paused && !muted) {
     bgm.play().catch(() => {});
   }
@@ -671,7 +696,13 @@ function drawExplosion(timestamp) {
     const maxSize = 420;
     const size = maxSize * (0.3 + 0.7 * progress);
     ctx.globalAlpha = 1 - progress * 0.2;
-    ctx.drawImage(explosionImg, canvas.width / 2 - size / 2, canvas.height / 2 - size / 2, size, size);
+    ctx.drawImage(
+      explosionImg,
+      canvas.width / 2 - size / 2,
+      canvas.height / 2 - size / 2,
+      size,
+      size
+    );
     ctx.globalAlpha = 1;
     return;
   }
@@ -702,18 +733,26 @@ function drawMuteButton() {
 }
 
 function drawUI() {
-  // score center-top
+  // score
   ctx.fillStyle = "#fff";
   ctx.font = "22px Arial";
   ctx.fillText(score, canvas.width / 2 - 5, 50);
 
-  // level + best top-left
+  // level + best
   const { level } = getDifficulty();
   ctx.font = "14px Arial";
   ctx.fillText(`Level: ${level + 1}`, 10, 20);
   ctx.fillText(`Best: ${bestScore}`, 10, 40);
 
-  // paused banner
+  // ready text
+  if (gameState === "ready") {
+    ctx.font = "16px Arial";
+    ctx.fillText("Tap / Space to Start", 120, 120);
+    ctx.font = "14px Arial";
+    ctx.fillText(`Best: ${bestScore}`, 120, 145);
+  }
+
+  // paused overlay
   if (gameState === "paused") {
     ctx.save();
     ctx.fillStyle = "rgba(0,0,0,0.55)";
@@ -724,13 +763,6 @@ function drawUI() {
     ctx.font = "14px Arial";
     ctx.fillText("Press P to Resume", canvas.width / 2 - 70, canvas.height / 2 + 25);
     ctx.restore();
-  }
-
-  if (gameState === "ready") {
-    ctx.font = "16px Arial";
-    ctx.fillText("Tap / Space to Start", 120, 120);
-    ctx.font = "14px Arial";
-    ctx.fillText(`Best: ${bestScore}`, 120, 145);
   }
 
   drawMuteButton();
@@ -785,6 +817,8 @@ function gameLoop(timestamp) {
   requestAnimationFrame(gameLoop);
 }
 
+// ---------------------------
 // Start
+// ---------------------------
 restartGame();
 requestAnimationFrame(gameLoop);
