@@ -9,8 +9,9 @@ const overlayText = document.getElementById("overlay-text");
 // ---------------------------
 // Game constants
 // ---------------------------
-const GRAVITY = 0.45;
-const FLAP = -8.5;
+const GRAVITY = 0.30;
+const FLAP = -8.0;
+const MAX_FALL_SPEED = 8.5;
 const GROUND_H = 80;
 
 const OBSTACLE_WIDTH = 70;
@@ -29,11 +30,29 @@ const SPEED_STEP = 0.25;
 const GAP_STEP = 6;
 const MIN_GAP_HEIGHT = 110;
 
+// EASY START (first 10 obstacles)
+const EASY_OBSTACLES = 10;
+const EASY_SPEED_MULT = 0.65;
+const EASY_GAP_BONUS = 45;
+const EASY_SPAWN_BONUS = 250;
+
 function getDifficulty() {
-  const level = Math.floor(score / SCORE_PER_LEVEL);
-  const speed = OBSTACLE_SPEED + level * SPEED_STEP;
-  const gap = Math.max(MIN_GAP_HEIGHT, GAP_HEIGHT - level * GAP_STEP);
-  return { level, speed, gap };
+  const easy = score < EASY_OBSTACLES;
+
+  const effectiveScore = Math.max(0, score - EASY_OBSTACLES);
+  const level = Math.floor(effectiveScore / SCORE_PER_LEVEL);
+
+  let speed = OBSTACLE_SPEED + level * SPEED_STEP;
+  let gap = Math.max(MIN_GAP_HEIGHT, GAP_HEIGHT - level * GAP_STEP);
+  let spawnBase = Math.max(900, SPAWN_INTERVAL - level * 40);
+
+  if (easy) {
+    speed = OBSTACLE_SPEED * EASY_SPEED_MULT;
+    gap = GAP_HEIGHT + EASY_GAP_BONUS;
+    spawnBase = SPAWN_INTERVAL + EASY_SPAWN_BONUS;
+  }
+
+  return { level, speed, gap, spawnBase, easy };
 }
 
 // ---------------------------
@@ -51,39 +70,115 @@ function saveBestScore() {
 }
 
 // ---------------------------
-// Background (city.jpg) + scroll
+// Backgrounds (Day/Night) + smooth fade
+// Every 10 score -> switch time
 // ---------------------------
-const bgImage = new Image();
-bgImage.src = "assets/city.jpg";
-
-let bgX = 0;
+const BG_PHASE_SCORE = 10;
+const BG_FADE_MS = 1200;
 const BG_SPEED = 0.6;
 
-function updateBackground() {
+const bgDay = new Image();
+bgDay.src = "assets/city.jpg";
+
+const bgNight = new Image();
+bgNight.src = "assets/city-night.jpg"; // ensure this exists
+
+const bgPhases = [
+  { name: "day", img: bgDay, speedBonus: 0.0, tintAlpha: 0.0 },
+  { name: "night", img: bgNight, speedBonus: 0.2, tintAlpha: 0.15 },
+];
+
+let bgX = 0;
+let bgPhaseIndex = 0;
+let bgTransition = {
+  active: false,
+  fromIndex: 0,
+  toIndex: 0,
+  startTime: 0,
+  duration: BG_FADE_MS,
+};
+
+function desiredBgIndex() {
+  return Math.floor(score / BG_PHASE_SCORE) % bgPhases.length;
+}
+
+function startBgTransition(toIndex, timestamp) {
+  bgTransition.active = true;
+  bgTransition.fromIndex = bgPhaseIndex;
+  bgTransition.toIndex = toIndex;
+  bgTransition.startTime = timestamp;
+}
+
+function updateBackground(timestamp) {
   if (gameState === "playing") {
-    bgX -= BG_SPEED;
+    const currentPhase = bgPhases[bgPhaseIndex];
+    const speed = BG_SPEED + currentPhase.speedBonus;
+    bgX -= speed;
     if (bgX <= -canvas.width) bgX = 0;
+  }
+
+  const wantIndex = desiredBgIndex();
+  if (!bgTransition.active && wantIndex !== bgPhaseIndex) {
+    startBgTransition(wantIndex, timestamp);
+  }
+
+  if (bgTransition.active) {
+    const t = (timestamp - bgTransition.startTime) / bgTransition.duration;
+    if (t >= 1) {
+      bgPhaseIndex = bgTransition.toIndex;
+      bgTransition.active = false;
+    }
   }
 }
 
-function drawBackground() {
-  if (bgImage.complete && bgImage.naturalWidth !== 0) {
-    ctx.drawImage(bgImage, bgX, 0, canvas.width, canvas.height);
-    ctx.drawImage(bgImage, bgX + canvas.width, 0, canvas.width, canvas.height);
-  } else {
-    ctx.fillStyle = "#0b1020";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+function drawBgImage(img, alpha = 1) {
+  if (!img || !img.complete || img.naturalWidth === 0) return false;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(img, bgX, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, bgX + canvas.width, 0, canvas.width, canvas.height);
+  ctx.restore();
+  return true;
+}
+
+function drawBackground(timestamp) {
+  ctx.fillStyle = "#0b1020";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!bgTransition.active) {
+    const phase = bgPhases[bgPhaseIndex];
+    const ok = drawBgImage(phase.img, 1);
+
+    if (ok && phase.tintAlpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = phase.tintAlpha;
+      ctx.fillStyle = "#000814";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+    return;
   }
+
+  const t = Math.min(
+    Math.max((timestamp - bgTransition.startTime) / bgTransition.duration, 0),
+    1
+  );
+
+  const fromPhase = bgPhases[bgTransition.fromIndex];
+  const toPhase = bgPhases[bgTransition.toIndex];
+
+  drawBgImage(fromPhase.img, 1 - t);
+  drawBgImage(toPhase.img, t);
 }
 
 // ---------------------------
-// Explosion image (optional)
+// Explosion image
 // ---------------------------
 const explosionImg = new Image();
 explosionImg.src = "assets/explosion/boom.png";
 
 // ---------------------------
-// Audio (BGM + endings + bomb + flap)
+// Audio
 // ---------------------------
 const VOLS = {
   bgm: 0.35,
@@ -92,16 +187,33 @@ const VOLS = {
   flap: 0.6,
 };
 
-const bgm = new Audio("assets/audio/bgm.mp3");
-bgm.loop = true;
-bgm.volume = VOLS.bgm;
+// Two BGMs
+const bgmDefault = new Audio("assets/audio/bgm.mp3");
+bgmDefault.loop = true;
+bgmDefault.volume = VOLS.bgm;
+
+const bgmHead2 = new Audio("assets/audio/bgm-head2.mp3"); // add this file
+bgmHead2.loop = true;
+bgmHead2.volume = VOLS.bgm;
+
+// We play only one at a time
+let currentBgm = bgmDefault;
 
 const endingAudios = [
   new Audio("assets/audio/random-ending1.mp3"),
   new Audio("assets/audio/random-ending2.mp3"),
   new Audio("assets/audio/random-ending3.mp3"),
 ];
-endingAudios.forEach(a => (a.volume = VOLS.ending));
+
+// Extra endings only for head2 (4–6)
+const head2ExtraEndings = [
+  new Audio("assets/audio/random-ending4.mp3"),
+  new Audio("assets/audio/random-ending5.mp3"),
+  new Audio("assets/audio/random-ending6.mp3"),
+];
+
+const allEndings = [...endingAudios, ...head2ExtraEndings];
+allEndings.forEach(a => (a.volume = VOLS.ending));
 
 const bombAudio = new Audio("assets/audio/bomb-blast.mp3");
 bombAudio.volume = VOLS.bomb;
@@ -115,57 +227,73 @@ let bgmWanted = false;
 let muted = false;
 
 function applyMuteState() {
-  if (muted) {
-    bgm.volume = 0;
-    endingAudios.forEach(a => (a.volume = 0));
-    bombAudio.volume = 0;
-    flapAudio.volume = 0;
-  } else {
-    bgm.volume = VOLS.bgm;
-    endingAudios.forEach(a => (a.volume = VOLS.ending));
-    bombAudio.volume = VOLS.bomb;
-    flapAudio.volume = VOLS.flap;
-  }
+  const vol = muted ? 0 : VOLS.bgm;
+  bgmDefault.volume = vol;
+  bgmHead2.volume = vol;
+
+  allEndings.forEach(a => (a.volume = muted ? 0 : VOLS.ending));
+  bombAudio.volume = muted ? 0 : VOLS.bomb;
+  flapAudio.volume = muted ? 0 : VOLS.flap;
 }
 
-// unlock on first user gesture
 function initAudioFromGesture() {
   if (audioReady) return;
   audioReady = true;
 
-  [bgm, bombAudio, flapAudio, ...endingAudios].forEach(a => a.load());
+  [bgmDefault, bgmHead2, bombAudio, flapAudio, ...allEndings].forEach(a => a.load());
 
-  // play/pause unlock trick
   const unlockOne = (a) =>
-    a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
-  unlockOne(bgm);
+    a.play()
+      .then(() => {
+        a.pause();
+        a.currentTime = 0;
+      })
+      .catch(() => {});
+  unlockOne(bgmDefault);
+  unlockOne(bgmHead2);
   unlockOne(bombAudio);
   unlockOne(flapAudio);
-  endingAudios.forEach(unlockOne);
+  allEndings.forEach(unlockOne);
 
   applyMuteState();
   if (bgmWanted) playBgm();
 }
 
+function setBgmForHead(headId, autoPlay = false) {
+  const wanted = (headId === 2) ? bgmHead2 : bgmDefault;
+  if (currentBgm === wanted) return;
+
+  // stop old bgm
+  currentBgm.pause();
+  currentBgm.currentTime = 0;
+
+  currentBgm = wanted;
+
+  if (autoPlay && gameState === "playing" && bgmWanted && audioReady && !muted) {
+    currentBgm.currentTime = 0;
+    currentBgm.play().catch(() => {});
+  }
+}
+
 function playBgm() {
   bgmWanted = true;
   if (!audioReady || muted) return;
-  if (!bgm.paused) return;
+  if (!currentBgm.paused) return;
 
-  bgm.currentTime = 0;
-  bgm.play().catch(() => {});
+  currentBgm.currentTime = 0;
+  currentBgm.play().catch(() => {});
 }
 
 function stopBgm() {
-  bgm.pause();
-  bgm.currentTime = 0;
+  currentBgm.pause();
+  currentBgm.currentTime = 0;
   bgmWanted = false;
 }
 
 function stopAllAudio() {
   stopBgm();
 
-  endingAudios.forEach(a => {
+  allEndings.forEach(a => {
     a.pause();
     a.currentTime = 0;
     a.onended = null;
@@ -219,9 +347,10 @@ const headSpritePaths = [
   "assets/heads/head3.png",
 ];
 
-const headSprites = headSpritePaths.map(p => {
+const headSprites = headSpritePaths.map((p, i) => {
   const img = new Image();
   img.src = p;
+  img._headId = i + 1; // 1,2,3
   return img;
 });
 
@@ -314,14 +443,17 @@ const player = {
   sprite: null,
 };
 
-function resetPlayer() {
+function resetPlayer(autoPlayBgm = false) {
   player.y = canvas.height / 2;
   player.vy = 0;
   player.sprite = randomHeadSprite();
+
+  const headId = player.sprite?._headId || 2;
+  setBgmForHead(headId, autoPlayBgm);
 }
 
 // ---------------------------
-// Obstacles (variety + wobble)
+// Obstacles
 // ---------------------------
 const obstacleSpritePaths = [
   "assets/obstacles/obs1.png",
@@ -376,18 +508,6 @@ function spawnObstacle() {
 }
 
 // ---------------------------
-// Overlay helpers
-// ---------------------------
-function showOverlay(title, text) {
-  overlayTitle.textContent = title;
-  overlayText.textContent = text;
-  overlay.classList.remove("hidden");
-}
-function hideOverlay() {
-  overlay.classList.add("hidden");
-}
-
-// ---------------------------
 // Collision helpers
 // ---------------------------
 function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
@@ -399,15 +519,24 @@ function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
 }
 
 // ---------------------------
-// Crash sequence
+// Crash sequence rules
 // ---------------------------
+function pickEndingAudioForHead(headId) {
+  if (headId === 1 || headId === 3) return endingAudios[0];
+
+  const head2Pool = [...endingAudios, ...head2ExtraEndings];
+  return head2Pool[Math.floor(Math.random() * head2Pool.length)];
+}
+
 function startCrashSequence(timestamp) {
   if (gameState !== "playing") return;
   gameState = "crash";
 
   stopBgm();
 
-  const endingAudio = endingAudios[Math.floor(Math.random() * endingAudios.length)];
+  const headId = player.sprite?._headId || 2;
+  const endingAudio = pickEndingAudioForHead(headId);
+
   endingAudio.currentTime = 0;
   if (!muted) endingAudio.play().catch(() => {});
 
@@ -456,7 +585,19 @@ function finishGameOver() {
 }
 
 // ---------------------------
-// Mute button + Mobile-safe input
+// Overlay helpers
+// ---------------------------
+function showOverlay(title, text) {
+  overlayTitle.textContent = title;
+  overlayText.textContent = text;
+  overlay.classList.remove("hidden");
+}
+function hideOverlay() {
+  overlay.classList.add("hidden");
+}
+
+// ---------------------------
+// Mute button + input
 // ---------------------------
 const muteBtn = { x: canvas.width - 95, y: 8, w: 85, h: 28 };
 
@@ -487,7 +628,7 @@ function flap() {
 
   if (gameState === "paused") {
     gameState = "playing";
-    if (bgmWanted && !muted && bgm.paused) playBgm();
+    if (bgmWanted && !muted && currentBgm.paused) playBgm();
   }
 
   if (gameState === "ready") {
@@ -496,6 +637,9 @@ function flap() {
     lastSpawnTime = performance.now();
     nextSpawnDelay = SPAWN_INTERVAL;
     bgX = 0;
+
+    // ensure correct BGM for this run’s head
+    resetPlayer(false);
     playBgm();
   }
 
@@ -564,17 +708,17 @@ window.addEventListener("keydown", e => {
 // Update
 // ---------------------------
 function update(timestamp) {
-  updateBackground();
+  updateBackground(timestamp);
 
-  // auto-retry bgm if blocked
-  if (gameState === "playing" && bgmWanted && audioReady && bgm.paused && !muted) {
-    bgm.play().catch(() => {});
+  if (gameState === "playing" && bgmWanted && audioReady && currentBgm.paused && !muted) {
+    currentBgm.play().catch(() => {});
   }
 
   if (gameState === "paused") return;
 
   if (gameState === "playing") {
     player.vy += GRAVITY;
+    if (player.vy > MAX_FALL_SPEED) player.vy = MAX_FALL_SPEED;
     player.y += player.vy;
 
     const groundY = canvas.height - GROUND_H;
@@ -594,9 +738,10 @@ function update(timestamp) {
       spawnObstacle();
       lastSpawnTime = timestamp;
 
-      const { level } = getDifficulty();
-      const base = Math.max(900, SPAWN_INTERVAL - level * 40);
-      nextSpawnDelay = base * (0.85 + Math.random() * 0.3);
+      const { spawnBase, easy } = getDifficulty();
+      nextSpawnDelay =
+        spawnBase * (easy ? (0.95 + Math.random() * 0.15)
+                          : (0.85 + Math.random() * 0.30));
     }
 
     obstacles.forEach(ob => {
@@ -706,17 +851,6 @@ function drawExplosion(timestamp) {
     ctx.globalAlpha = 1;
     return;
   }
-
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  const maxR = 260 * progress;
-
-  ctx.save();
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath(); ctx.fillStyle = "#ffb703"; ctx.arc(cx, cy, maxR, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.fillStyle = "#fb8500"; ctx.arc(cx, cy, maxR * 0.65, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.fillStyle = "#ff006e"; ctx.arc(cx, cy, maxR * 0.35, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
 }
 
 function drawMuteButton() {
@@ -733,18 +867,18 @@ function drawMuteButton() {
 }
 
 function drawUI() {
-  // score
   ctx.fillStyle = "#fff";
   ctx.font = "22px Arial";
   ctx.fillText(score, canvas.width / 2 - 5, 50);
 
-  // level + best
   const { level } = getDifficulty();
   ctx.font = "14px Arial";
   ctx.fillText(`Level: ${level + 1}`, 10, 20);
   ctx.fillText(`Best: ${bestScore}`, 10, 40);
 
-  // ready text
+  const phaseName = bgPhases[bgPhaseIndex].name.toUpperCase();
+  ctx.fillText(`Time: ${phaseName}`, 10, 60);
+
   if (gameState === "ready") {
     ctx.font = "16px Arial";
     ctx.fillText("Tap / Space to Start", 120, 120);
@@ -752,7 +886,6 @@ function drawUI() {
     ctx.fillText(`Best: ${bestScore}`, 120, 145);
   }
 
-  // paused overlay
   if (gameState === "paused") {
     ctx.save();
     ctx.fillStyle = "rgba(0,0,0,0.55)";
@@ -780,8 +913,11 @@ function restartGame() {
   nextSpawnDelay = SPAWN_INTERVAL;
 
   stopAllAudio();
-  resetPlayer();
+  resetPlayer(false);
   bgX = 0;
+
+  bgPhaseIndex = 0;
+  bgTransition.active = false;
 
   overlay.classList.remove("bloody");
   showOverlay("Ready", "Tap / Space to Start");
@@ -806,7 +942,7 @@ function gameLoop(timestamp) {
   ctx.save();
   ctx.translate(offset.x, offset.y);
 
-  drawBackground();
+  drawBackground(timestamp);
   drawExplosion(timestamp);
   drawObstacles();
   drawGround();
